@@ -1,0 +1,38 @@
+$chartHeight: 180px;
+
+div.chart{
+    width: 100%;
+    height: $chartHeight;
+    max-height: $chartHeight;
+
+    &.height260{
+        height: 260px;
+        max-height: 260px;
+    }
+
+    &.fullheight{
+        height: 100%;
+        max-height: none;
+        width: 100%;
+    }
+}
+
+ion-content{
+    &.hidden{
+        display:none;
+    }
+}
+
+ion-item{
+    --padding-start: 0;
+}
+
+ion-segment-button{
+    min-width: 120px;
+}
+
+.full-graph-wrapper{
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}

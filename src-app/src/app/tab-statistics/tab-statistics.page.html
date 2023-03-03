@@ -1,0 +1,49 @@
+<ion-header>
+  <ion-toolbar>
+    <ion-title>Statistics</ion-title>
+    <ion-spinner *ngIf="energyService.isLoading()"></ion-spinner>
+  </ion-toolbar>
+
+  <ion-toolbar>
+      <ion-segment value="30days" (ionChange)="segmentChanged($event)">
+          <ion-segment-button value="30days">
+              <ion-label>Last 30 days</ion-label>
+          </ion-segment-button>
+          <ion-segment-button value="12months">
+              <ion-label>Last 12 months</ion-label>
+          </ion-segment-button>
+        </ion-segment>
+  </ion-toolbar>
+</ion-header>
+
+<app-loading-indicator [show]="energyService.isLoading()"></app-loading-indicator>
+
+<ion-content padding [class.hidden]="activeSegmentControl !== '30days'">
+      <ion-card-subtitle>Breakdown per day</ion-card-subtitle>
+      <div #usageChart class="chart height260"></div>
+
+      <br>
+
+      <ion-card-subtitle>Day vs. Night</ion-card-subtitle>
+      <div #dayVsNight class="chart"></div>
+
+      <br><br>
+
+      <ion-card-subtitle>More</ion-card-subtitle>
+      <ion-list>
+          <ion-item>
+            <ion-label>Daily average</ion-label>
+            <ion-note slot="end">{{ moreStats.daily_average | number:'1.0-2' }} kWh</ion-note>
+          </ion-item>
+          <ion-item>
+            <ion-label>Total last 30 days</ion-label>
+            <ion-note slot="end">{{ moreStats.total_30days | number:'1.0-2' }} kWh</ion-note>
+          </ion-item>
+        </ion-list>
+</ion-content>
+
+<ion-content padding [class.hidden]="activeSegmentControl !== '12months'">
+  <div class="full-graph-wrapper">
+    <div #yearlyChart class="chart fullheight"></div>
+  </div>
+</ion-content>
