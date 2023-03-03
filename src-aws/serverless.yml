@@ -1,0 +1,226 @@
+service: xd-home-energy-monitor
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  stage: prod
+  region: eu-west-1
+  profile: serverless-personal
+  memorySize: 256
+  deploymentBucket:
+    name: "xd-serverless-deployments"
+
+  environment:
+    TZ: Europe/Brussels
+    DYNAMO_DB_TABLE: !Ref dynamoDataStore
+    S3_STORAGE_BUCKET: !Ref datastoreReadings
+
+  apiGateway:
+    minimumCompressionSize: 1024
+
+  stackTags:
+    client: "xd-home-energy-monitor"
+
+  iamRoleStatements:
+    - Effect: "Allow"
+      Action:
+        - dynamodb:Query
+        - dynamodb:GetItem
+        - dynamodb:PutItem
+        - dynamodb:DeleteItem
+      Resource: !GetAtt [dynamoDataStore, Arn]
+
+    - Effect: "Allow"
+      Action:
+        - s3:GetObject
+        - s3:PutObject
+      Resource: 
+        - !GetAtt [datastoreReadings, Arn]
+        - !Join ['', [!GetAtt [datastoreReadings, Arn], '/*']]
+
+plugins:
+  - serverless-webpack
+  - serverless-finch
+  - serverless-scriptable-plugin
+
+package:
+  individually: true
+  exclude:
+    - functions/graphql/node_modules/**
+    - dashboard/**
+    - tests/**
+
+functions:
+  dailyDataArchive:
+    handler: functions/cron-rotate-daily.handler
+    description: Archive and aggregate yesterday's data to S3 and DynamoDB
+    timeout: 30
+    events:
+      - schedule:
+          description: "Archive the data generated yesterday to S3"
+          rate: cron(0 2 * * ? *)
+
+  graphql:
+    description: GraphQL endpoint to query readings from devices
+    handler: functions/graphql/graphql.handler
+    memorySize: 512
+    package:
+      include:
+        - functions/graphql/node_modules/**
+    events:
+      - http:
+          path: graphql
+          method: post
+          cors: true
+
+resources:
+  Description: Monitoring home energy usage over time
+  Resources:
+
+    ###
+    # S3 Bucket to store daily/monthly files containing all raw measurements.
+    # Used to batch data up, reduce load on DynamoDB, reduce costs and allow
+    # for fasting charting of our data with Dygraphs.
+    ###
+    datastoreReadings:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:service}-datastore
+
+    ###
+    # S3 Bucket to store our front-end dashboard HTML code!
+    ###
+    wwwBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:service}-www
+
+    ###
+    # DynamoDB table that stores recent raw messages from the devices
+    # as well as computed usage information per sensor, per day, per month.
+    ###
+    dynamoDataStore:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}
+        AttributeDefinitions:
+          - AttributeName: "primarykey"
+            AttributeType: S
+          - AttributeName: "sortkey"
+            AttributeType: N
+        KeySchema:
+          - AttributeName: "primarykey"
+            KeyType: HASH
+          - AttributeName: "sortkey"
+            KeyType: RANGE
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+        TimeToLiveSpecification:
+          AttributeName: ttl
+          Enabled: true
+
+    ###
+    # This IoT rule takes incoming messages and stores them straight
+    # into DynamoDB with the current timestamp (when we received the 
+    # message) as well as a calculated TTL for the item (30 days)
+    # 
+    # WARNING: if we update this, the name of the rule will change
+    # and then the iotPolicyForDevices should also be changed to
+    # reflect it!
+    ###
+    iotRule:
+      Type: AWS::IoT::TopicRule
+      Properties:
+        TopicRulePayload:
+          Actions:
+            - 
+              DynamoDBv2:
+                PutItem:
+                  TableName: ${self:service}
+                RoleArn: !GetAtt [iotRuleAllowDynamoWrites, Arn]
+          AwsIotSqlVersion: "2016-03-23"
+          Description: "Forwards incoming sensor messages to DynamoDB for analysis"
+          RuleDisabled: false
+          Sql: >-
+            SELECT * ,
+                  'reading-' + clientid() as primarykey, 
+                  (timestamp() / 1000) as sortkey, 
+                  ((timestamp() / 1000) + 2592000) as ttl FROM '*** YOUR AWS IOT CORE THING ARN ***' 
+
+    ###
+    # Policy that defines what each sensor is allowed to do. On basic
+    # level it should be allowed to publish directly to the rule
+    # topic. We also only allow a device to connect if the used
+    # certificate is attached to the thing that is trying to connect.
+    ###
+    iotPolicyForDevices:
+      Type: AWS::IoT::Policy
+      Properties:
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            -
+              Effect: "Allow"
+              Action:
+                - "iot:Connect"
+              Resource: "*"
+              Condition:
+                Bool:
+                  "iot:Connection.Thing.IsAttached": [true]
+            -
+              Effect: "Allow"
+              Action:
+                - "iot:Publish"
+              Resource: 
+                - Fn::Join:
+                   - ""
+                   - - "arn:aws:iot:"
+                     - Ref: AWS::Region
+                     - ":"
+                     - Ref: AWS::AccountId
+                     - ":topic/$aws/rules/"
+                     - Ref: iotRule
+
+    ###
+    # Role that allows the IoT Topic Rule to write items to our
+    # DynamoDB table (and only that table)
+    ###
+    iotRuleAllowDynamoWrites:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument: 
+          Version: "2012-10-17"
+          Statement: 
+            - 
+              Effect: "Allow"
+              Principal: 
+                Service: 
+                  - "iot.amazonaws.com"
+              Action: 
+                - "sts:AssumeRole"
+        Path: "/"
+        Policies:
+          -
+            PolicyName: ${self:service}-firehose-role
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement: 
+                - Effect: "Allow"
+                  Action:
+                    - "dynamodb:PutItem"
+                  Resource: !GetAtt [dynamoDataStore, Arn]
+
+custom:
+  scriptHooks:
+     before:deploy:createDeploymentArtifacts: npm run test
+
+  client:
+    bucketName: ${self:service}-www
+    distributionFolder: dashboard/
+    indexDocument: index.html
+
+  webpack:
+    webpackConfig: 'webpack.config.js'   # Name of webpack configuration file
+    includeModules: true   # Node modules configuration for packaging
+    packager: 'npm'   # Packager that will be used to package your external modules
